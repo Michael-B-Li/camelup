@@ -9,6 +9,8 @@ namespace camelup {
 namespace {
 
 constexpr std::array<int, kLegTicketCount> kLegTicketDefaults = {5, 3, 2};
+// Final bet rewards in play order for correct guesses
+constexpr std::array<int, 5> kFinalBetPayouts = {8, 5, 3, 2, 1};
 
 // Locate a camel anywhere on the board and return {tile_index, stack_index}
 // stack_index is measured bottom->top within that tile
@@ -41,6 +43,106 @@ bool is_legal_place_desert_tile_action(const GameState& state, const PlaceDesert
         const auto& legal_payload = std::get<PlaceDesertTilePayload>(action.payload);
         return legal_payload.tile == payload.tile && legal_payload.move_delta == payload.move_delta;
     });
+}
+
+bool is_legal_take_leg_ticket_action(const GameState& state, const TakeLegTicketPayload& payload) {
+    const auto legal = rules::legal_actions(state);
+    return std::any_of(legal.begin(), legal.end(), [&payload](const Action& action) {
+        if (action.type() != ActionType::TakeLegTicket) {
+            return false;
+        }
+        const auto& legal_payload = std::get<TakeLegTicketPayload>(action.payload);
+        return legal_payload.camel == payload.camel;
+    });
+}
+
+// Validate winner bet by checking generated legal actions
+bool is_legal_bet_winner_action(const GameState& state, const BetWinnerPayload& payload) {
+    const auto legal = rules::legal_actions(state);
+    return std::any_of(legal.begin(), legal.end(), [&payload](const Action& action) {
+        if (action.type() != ActionType::BetWinner) {
+            return false;
+        }
+        const auto& legal_payload = std::get<BetWinnerPayload>(action.payload);
+        return legal_payload.camel == payload.camel;
+    });
+}
+
+// Validate loser bet by checking generated legal actions
+bool is_legal_bet_loser_action(const GameState& state, const BetLoserPayload& payload) {
+    const auto legal = rules::legal_actions(state);
+    return std::any_of(legal.begin(), legal.end(), [&payload](const Action& action) {
+        if (action.type() != ActionType::BetLoser) {
+            return false;
+        }
+        const auto& legal_payload = std::get<BetLoserPayload>(action.payload);
+        return legal_payload.camel == payload.camel;
+    });
+}
+
+int clamp_tile_index(int tile) {
+    return std::max(0, std::min(tile, kBoardTiles - 1));
+}
+
+int final_bet_payout_for_correct_index(int correct_index) {
+    if (correct_index < 0) {
+        return 1;
+    }
+    if (correct_index >= static_cast<int>(kFinalBetPayouts.size())) {
+        return 1;
+    }
+    return kFinalBetPayouts[correct_index];
+}
+
+// Winner is the top camel on the furthest tile
+CamelId find_overall_winner(const GameState& state) {
+    for (int tile = kBoardTiles - 1; tile >= 0; --tile) {
+        const auto& stack = state.board[tile];
+        if (stack.empty()) {
+            continue;
+        }
+        return stack.back();
+    }
+    throw std::runtime_error("winner not found on board");
+}
+
+// Loser is the bottom camel on the nearest tile
+CamelId find_overall_loser(const GameState& state) {
+    for (int tile = 0; tile < kBoardTiles; ++tile) {
+        const auto& stack = state.board[tile];
+        if (stack.empty()) {
+            continue;
+        }
+        return stack.front();
+    }
+    throw std::runtime_error("loser not found on board");
+}
+
+// Resolve one final bet stack using target camel and play order payouts
+void resolve_final_bet_stack(std::array<int, kMaxPlayers>& money,
+                             const std::vector<FinalBetCard>& stack,
+                             CamelId target_camel) {
+    int correct_count = 0;
+    for (const auto& card : stack) {
+        const int player = static_cast<int>(card.player);
+        if (player < 0 || player >= kMaxPlayers) {
+            continue;
+        }
+        if (card.camel == target_camel) {
+            money[player] += final_bet_payout_for_correct_index(correct_count);
+            ++correct_count;
+        } else {
+            money[player] -= 1;
+        }
+    }
+}
+
+// Resolve both final bet stacks when race ends
+void resolve_end_of_game_payouts(GameState& state) {
+    const CamelId winner = find_overall_winner(state);
+    const CamelId loser = find_overall_loser(state);
+    resolve_final_bet_stack(state.money, state.winner_bet_stack, winner);
+    resolve_final_bet_stack(state.money, state.loser_bet_stack, loser);
 }
 
 }  // namespace
@@ -137,20 +239,64 @@ GameState Engine::apply_action(const GameState& state, const Action& action) {
             next.current_player = static_cast<PlayerId>((next.current_player + 1) % next.player_count);
             break;
         }
-        case ActionType::TakeLegTicket:
-        case ActionType::BetWinner:
+        case ActionType::TakeLegTicket: {
+            // Validate ticket request for current state
+            const auto payload = std::get<TakeLegTicketPayload>(action.payload);
+            if (!is_legal_take_leg_ticket_action(next, payload)) {
+                throw std::invalid_argument("illegal take leg ticket action");
+            }
+
+            // Determine ticket value from remaining count
+            const CamelId camel = payload.camel;
+            const int remaining = next.leg_tickets_remaining[camel];
+            if (remaining <= 0 || remaining > kLegTicketCount) {
+                throw std::runtime_error("invalid leg ticket state");
+            }
+
+            const int next_ticket_index = kLegTicketCount - remaining;
+            const int ticket_value = next.leg_ticket_values[camel][next_ticket_index];
+
+            // Record ticket on player and consume one from supply
+            next.player_leg_tickets[next.current_player].push_back({camel, ticket_value});
+            next.leg_tickets_remaining[camel] = remaining - 1;
+            next.current_player = static_cast<PlayerId>((next.current_player + 1) % next.player_count);
+            break;
+        }
+        case ActionType::BetWinner: {
+            // Validate that current player still has this winner card
+            const auto payload = std::get<BetWinnerPayload>(action.payload);
+            if (!is_legal_bet_winner_action(next, payload)) {
+                throw std::invalid_argument("illegal winner bet action");
+            }
+
+            const PlayerId current_player = next.current_player;
+            // Push bet in play order then mark card as used
+            next.winner_bet_stack.push_back({current_player, payload.camel});
+            next.winner_bet_card_available[current_player][payload.camel] = false;
+            next.current_player = static_cast<PlayerId>((next.current_player + 1) % next.player_count);
+            break;
+        }
         case ActionType::BetLoser: {
-            // Placeholder action handling: rotate turn only
-            // TODO: Implement full v1 behaviour and scoring effects for non-roll actions
+            // Validate that current player still has this loser card
+            const auto payload = std::get<BetLoserPayload>(action.payload);
+            if (!is_legal_bet_loser_action(next, payload)) {
+                throw std::invalid_argument("illegal loser bet action");
+            }
+
+            const PlayerId current_player = next.current_player;
+            // Push bet in play order then mark card as used
+            next.loser_bet_stack.push_back({current_player, payload.camel});
+            next.loser_bet_card_available[current_player][payload.camel] = false;
             next.current_player = static_cast<PlayerId>((next.current_player + 1) % next.player_count);
             break;
         }
     }
 
     // Current finish condition: any camel on final tile ends the game
-    // TODO: Add end-of-game payout resolution (winner/loser bets) before finalising scores
     if (!next.board[kBoardTiles - 1].empty()) {
         next.terminal = true;
+        // Final winner and loser bets are settled once on transition to terminal
+        resolve_end_of_game_payouts(next);
     }
 
     return next;
@@ -200,13 +346,34 @@ void Engine::move_camel_stack(GameState& state, CamelId camel, int distance) {
     std::vector<CamelId> carried(source.begin() + idx, source.end());
     source.erase(source.begin() + idx, source.end());
 
-    // Clamp movement at the finish tile in this scaffold
-    // TODO: Apply desert tile +/-1 movement and under/over stacking rules after landing
-    const int target_tile = std::min(tile + distance, kBoardTiles - 1);
+    // Base landing tile from die roll
+    const int landing_tile = std::min(tile + distance, kBoardTiles - 1);
 
-    // Landing behaviour: carried stack is placed on top of destination stack
-    auto& destination = state.board[target_tile];
-    destination.insert(destination.end(), carried.begin(), carried.end());
+    int final_tile = landing_tile;
+    bool place_under_stack = false;
+
+    // Desert tile triggers +1 oasis or -1 mirage and pays 1 coin to owner
+    const int owner = state.desert_tile_owner[landing_tile];
+    if (owner >= 0 && owner < kMaxPlayers) {
+        if (owner < state.player_count) {
+            state.money[owner] += 1;
+        }
+
+        int move_delta = state.desert_tiles[owner].move_delta;
+        if (move_delta != -1 && move_delta != 1) {
+            move_delta = 1;
+        }
+        final_tile = clamp_tile_index(landing_tile + move_delta);
+        place_under_stack = (move_delta < 0);
+    }
+
+    // Oasis stacks on top and mirage stacks underneath
+    auto& destination = state.board[final_tile];
+    if (place_under_stack) {
+        destination.insert(destination.begin(), carried.begin(), carried.end());
+    } else {
+        destination.insert(destination.end(), carried.begin(), carried.end());
+    }
 }
 
 }  // namespace camelup

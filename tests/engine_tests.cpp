@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cstddef>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include "camelup/actions.hpp"
@@ -76,6 +77,18 @@ bool has_desert_placement_on_tile(const std::vector<camelup::Action>& actions, i
         }
     }
     return false;
+}
+
+std::pair<int, int> find_camel_on_board(const camelup::GameState& state, camelup::CamelId camel) {
+    for (int tile = 0; tile < camelup::kBoardTiles; ++tile) {
+        const auto& stack = state.board[tile];
+        for (int idx = 0; idx < static_cast<int>(stack.size()); ++idx) {
+            if (stack[idx] == camel) {
+                return {tile, idx};
+            }
+        }
+    }
+    return {-1, -1};
 }
 
 }  // namespace
@@ -210,6 +223,202 @@ int main() {
             threw = true;
         }
         assert(threw);
+    }
+
+    {
+        auto modified = state;
+        const auto after_first = engine.apply_action(modified, camelup::Action::take_leg_ticket(camelup::Camel::Blue));
+        assert(after_first.player_leg_tickets[0].size() == 1);
+        assert(after_first.player_leg_tickets[0][0].camel == camelup::Camel::Blue);
+        assert(after_first.player_leg_tickets[0][0].value == 5);
+        assert(after_first.leg_tickets_remaining[camelup::Camel::Blue] == 2);
+        assert(after_first.current_player == 1);
+    }
+
+    {
+        auto modified = state;
+        modified = engine.apply_action(modified, camelup::Action::take_leg_ticket(camelup::Camel::Blue));
+        modified = engine.apply_action(modified, camelup::Action::take_leg_ticket(camelup::Camel::Blue));
+        modified = engine.apply_action(modified, camelup::Action::take_leg_ticket(camelup::Camel::Blue));
+
+        assert(modified.player_leg_tickets[0].size() == 1);
+        assert(modified.player_leg_tickets[1].size() == 1);
+        assert(modified.player_leg_tickets[2].size() == 1);
+        assert(modified.player_leg_tickets[0][0].value == 5);
+        assert(modified.player_leg_tickets[1][0].value == 3);
+        assert(modified.player_leg_tickets[2][0].value == 2);
+        assert(modified.leg_tickets_remaining[camelup::Camel::Blue] == 0);
+
+        const auto legal_after_exhaustion = engine.legal_actions(modified);
+        assert(!has_take_leg_ticket_for_camel(legal_after_exhaustion, camelup::Camel::Blue));
+
+        bool threw = false;
+        try {
+            static_cast<void>(engine.apply_action(modified, camelup::Action::take_leg_ticket(camelup::Camel::Blue)));
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        assert(threw);
+    }
+
+    {
+        auto modified = state;
+        const auto after_bet = engine.apply_action(modified, camelup::Action::bet_winner(camelup::Camel::Green));
+        assert(after_bet.winner_bet_stack.size() == 1);
+        assert(after_bet.winner_bet_stack[0].player == 0);
+        assert(after_bet.winner_bet_stack[0].camel == camelup::Camel::Green);
+        assert(!after_bet.winner_bet_card_available[0][camelup::Camel::Green]);
+        assert(after_bet.current_player == 1);
+    }
+
+    {
+        auto modified = state;
+        const auto after_bet = engine.apply_action(modified, camelup::Action::bet_loser(camelup::Camel::Orange));
+        assert(after_bet.loser_bet_stack.size() == 1);
+        assert(after_bet.loser_bet_stack[0].player == 0);
+        assert(after_bet.loser_bet_stack[0].camel == camelup::Camel::Orange);
+        assert(!after_bet.loser_bet_card_available[0][camelup::Camel::Orange]);
+        assert(after_bet.current_player == 1);
+    }
+
+    {
+        auto modified = state;
+        modified = engine.apply_action(modified, camelup::Action::bet_winner(camelup::Camel::Green));
+        modified.current_player = 0;
+        const auto legal_after_use = engine.legal_actions(modified);
+        assert(!has_winner_bet_for_camel(legal_after_use, camelup::Camel::Green));
+
+        bool threw = false;
+        try {
+            static_cast<void>(engine.apply_action(modified, camelup::Action::bet_winner(camelup::Camel::Green)));
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        assert(threw);
+    }
+
+    {
+        auto modified = state;
+        modified = engine.apply_action(modified, camelup::Action::bet_loser(camelup::Camel::Orange));
+        modified.current_player = 0;
+        const auto legal_after_use = engine.legal_actions(modified);
+        assert(!has_loser_bet_for_camel(legal_after_use, camelup::Camel::Orange));
+
+        bool threw = false;
+        try {
+            static_cast<void>(engine.apply_action(modified, camelup::Action::bet_loser(camelup::Camel::Orange)));
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        assert(threw);
+    }
+
+    {
+        auto modified = state;
+        for (auto& stack : modified.board) {
+            stack.clear();
+        }
+        modified.current_player = 0;
+        modified.player_count = 4;
+        modified.die_available.fill(false);
+        modified.die_available[camelup::Camel::Blue] = true;
+
+        modified.board[0] = {camelup::Camel::Blue};
+        modified.board[2] = {camelup::Camel::Green};
+        modified.board[3] = {camelup::Camel::Yellow};
+        modified.board[4] = {camelup::Camel::Orange};
+
+        modified.desert_tile_owner.fill(-1);
+        modified.desert_tile_owner[1] = 1;
+        modified.desert_tile_owner[2] = 2;
+        modified.desert_tile_owner[3] = 3;
+        modified.desert_tiles[1] = {1, 1};
+        modified.desert_tiles[2] = {2, 1};
+        modified.desert_tiles[3] = {3, 1};
+
+        const int money_before_sum = modified.money[0] + modified.money[1] + modified.money[2] + modified.money[3];
+        const auto after_roll = engine.apply_action(modified, camelup::Action::roll_die());
+        const int money_after_sum = after_roll.money[0] + after_roll.money[1] + after_roll.money[2] + after_roll.money[3];
+        assert(money_after_sum == money_before_sum + 2);
+
+        const auto [tile, idx] = find_camel_on_board(after_roll, camelup::Camel::Blue);
+        assert(tile >= 2 && tile <= 4);
+        assert(after_roll.board[tile].size() == 2);
+        assert(idx == static_cast<int>(after_roll.board[tile].size()) - 1);
+    }
+
+    {
+        auto modified = state;
+        for (auto& stack : modified.board) {
+            stack.clear();
+        }
+        modified.current_player = 0;
+        modified.player_count = 4;
+        modified.die_available.fill(false);
+        modified.die_available[camelup::Camel::Blue] = true;
+
+        modified.board[0] = {camelup::Camel::Green, camelup::Camel::Blue};
+        modified.board[1] = {camelup::Camel::Yellow};
+        modified.board[2] = {camelup::Camel::Orange};
+
+        modified.desert_tile_owner.fill(-1);
+        modified.desert_tile_owner[1] = 1;
+        modified.desert_tile_owner[2] = 2;
+        modified.desert_tile_owner[3] = 3;
+        modified.desert_tiles[1] = {1, -1};
+        modified.desert_tiles[2] = {2, -1};
+        modified.desert_tiles[3] = {3, -1};
+
+        const int money_before_sum = modified.money[0] + modified.money[1] + modified.money[2] + modified.money[3];
+        const auto after_roll = engine.apply_action(modified, camelup::Action::roll_die());
+        const int money_after_sum = after_roll.money[0] + after_roll.money[1] + after_roll.money[2] + after_roll.money[3];
+        assert(money_after_sum == money_before_sum + 2);
+
+        const auto [tile, idx] = find_camel_on_board(after_roll, camelup::Camel::Blue);
+        assert(tile >= 0 && tile <= 2);
+        assert(after_roll.board[tile].size() == 2);
+        assert(idx == 0);
+    }
+
+    {
+        auto modified = state;
+        for (auto& stack : modified.board) {
+            stack.clear();
+        }
+        modified.money.fill(3);
+        modified.player_count = 4;
+        modified.current_player = 0;
+        modified.terminal = false;
+        modified.die_available.fill(false);
+        modified.die_available[camelup::Camel::Blue] = true;
+
+        modified.board[15] = {camelup::Camel::Blue};
+        modified.board[10] = {camelup::Camel::Green};
+        modified.board[7] = {camelup::Camel::Yellow};
+        modified.board[5] = {camelup::Camel::Orange};
+        modified.board[1] = {camelup::Camel::White};
+
+        modified.winner_bet_stack = {
+            {0, camelup::Camel::Blue},
+            {1, camelup::Camel::Green},
+            {2, camelup::Camel::Blue},
+            {3, camelup::Camel::Blue},
+        };
+        modified.loser_bet_stack = {
+            {1, camelup::Camel::White},
+            {2, camelup::Camel::Orange},
+            {3, camelup::Camel::White},
+        };
+
+        const auto after_finish = engine.apply_action(modified, camelup::Action::roll_die());
+        assert(after_finish.terminal);
+        assert(after_finish.money[0] == 12);
+        assert(after_finish.money[1] == 10);
+        assert(after_finish.money[2] == 7);
+        assert(after_finish.money[3] == 11);
+
+        const auto after_extra = engine.apply_action(after_finish, camelup::Action::roll_die());
+        assert(after_extra.money == after_finish.money);
     }
 
     const auto before_player = state.current_player;
