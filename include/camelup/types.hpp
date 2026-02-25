@@ -10,6 +10,7 @@ using CamelId = std::uint8_t;
 inline constexpr int kCamelCount = 5;
 inline constexpr int kBoardTiles = 17;
 inline constexpr int kMaxPlayers = 8;
+inline constexpr int kLegTicketCount = 3;
 inline constexpr bool kCrazyCamelsEnabled = false;  // Camel Up v1
 
 enum Camel : CamelId {

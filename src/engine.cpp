@@ -7,6 +7,8 @@ namespace camelup {
 
 namespace {
 
+constexpr std::array<int, kLegTicketCount> kLegTicketDefaults = {5, 3, 2};
+
 // Locate a camel anywhere on the board and return {tile_index, stack_index}
 // stack_index is measured bottom->top within that tile
 std::pair<int, int> find_camel(const GameState& state, CamelId camel) {
@@ -44,7 +46,21 @@ GameState Engine::new_game(int player_count) {
     state.leg_number = 1;
     state.terminal = false;
     state.money.fill(3);
+    state.desert_tile_owner.fill(-1);
+    state.leg_tickets_remaining.fill(kLegTicketCount);
     reset_leg_dice(state);
+
+    for (CamelId camel = 0; camel < static_cast<CamelId>(kCamelCount); ++camel) {
+        state.leg_ticket_values[camel] = kLegTicketDefaults;
+    }
+
+    for (int player = 0; player < kMaxPlayers; ++player) {
+        const bool active_player = player < player_count;
+        for (CamelId camel = 0; camel < static_cast<CamelId>(kCamelCount); ++camel) {
+            state.winner_bet_card_available[player][camel] = active_player;
+            state.loser_bet_card_available[player][camel] = active_player;
+        }
+    }
 
     // Basic setup used in this scaffold: all camels start on tile 0
     // TODO: Implement Camel Up v1 opening setup (initial die rolls) instead of a fixed stack
