@@ -8,6 +8,7 @@ option(CAMELUP_BUILD_UI "Build optional terminal UI viewer" ON)
 
 add_library(camelup_engine
     src/engine.cpp
+    src/rules/legal_actions.cpp
 )
 
 target_include_directories(camelup_engine

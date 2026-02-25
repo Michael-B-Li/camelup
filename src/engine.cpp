@@ -1,4 +1,5 @@
 #include "camelup/engine.hpp"
+#include "camelup/rules/legal_actions.hpp"
 
 #include <algorithm> // any_of, min
 #include <stdexcept>
@@ -72,19 +73,7 @@ GameState Engine::new_game(int player_count) {
 }
 
 std::vector<Action> Engine::legal_actions(const GameState& state) const {
-    if (state.terminal) {
-        return {};
-    }
-
-    // Placeholder list for full rules expansion
-    // TODO: Restrict legal actions using full v1 state (ticket availability, tile placement rules, bet cards)
-    return {
-        Action::roll_die(),
-        Action::place_desert_tile(-1, 1),
-        Action::take_leg_ticket(0),
-        Action::bet_winner(0),
-        Action::bet_loser(0),
-    };
+    return rules::legal_actions(state);
 }
 
 GameState Engine::apply_action(const GameState& state, const Action& action) {
