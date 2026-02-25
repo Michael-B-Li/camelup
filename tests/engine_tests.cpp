@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cstddef>
+#include <stdexcept>
 #include <vector>
 
 #include "camelup/actions.hpp"
@@ -165,6 +166,50 @@ int main() {
         assert(has_desert_placement_on_tile(modified_legal, 7));
         assert(has_desert_placement_on_tile(modified_legal, 8));
         assert(has_desert_placement_on_tile(modified_legal, 9));
+    }
+
+    {
+        auto modified = state;
+        const auto after_place = engine.apply_action(modified, camelup::Action::place_desert_tile(3, 1));
+        assert(after_place.desert_tiles[0].tile == 3);
+        assert(after_place.desert_tiles[0].move_delta == 1);
+        assert(after_place.desert_tile_owner[3] == 0);
+        assert(after_place.current_player == 1);
+    }
+
+    {
+        auto modified = state;
+        modified.desert_tile_owner[4] = 0;
+        modified.desert_tiles[0] = {4, 1};
+        const auto after_move = engine.apply_action(modified, camelup::Action::place_desert_tile(7, -1));
+        assert(after_move.desert_tile_owner[4] == -1);
+        assert(after_move.desert_tile_owner[7] == 0);
+        assert(after_move.desert_tiles[0].tile == 7);
+        assert(after_move.desert_tiles[0].move_delta == -1);
+        assert(after_move.current_player == 1);
+    }
+
+    {
+        bool threw = false;
+        try {
+            static_cast<void>(engine.apply_action(state, camelup::Action::place_desert_tile(0, 1)));
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        assert(threw);
+    }
+
+    {
+        auto modified = state;
+        modified.desert_tile_owner[5] = 1;
+        modified.desert_tiles[1] = {5, 1};
+        bool threw = false;
+        try {
+            static_cast<void>(engine.apply_action(modified, camelup::Action::place_desert_tile(4, 1)));
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        assert(threw);
     }
 
     const auto before_player = state.current_player;

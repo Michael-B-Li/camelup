@@ -31,6 +31,18 @@ bool has_available_die(const GameState& state) {
     });
 }
 
+// Validate placement by matching against generated legal actions
+bool is_legal_place_desert_tile_action(const GameState& state, const PlaceDesertTilePayload& payload) {
+    const auto legal = rules::legal_actions(state);
+    return std::any_of(legal.begin(), legal.end(), [&payload](const Action& action) {
+        if (action.type() != ActionType::PlaceDesertTile) {
+            return false;
+        }
+        const auto& legal_payload = std::get<PlaceDesertTilePayload>(action.payload);
+        return legal_payload.tile == payload.tile && legal_payload.move_delta == payload.move_delta;
+    });
+}
+
 }  // namespace
 
 Engine::Engine(std::uint32_t seed) : rng_(seed) {}
@@ -102,7 +114,29 @@ GameState Engine::apply_action(const GameState& state, const Action& action) {
             next.current_player = static_cast<PlayerId>((next.current_player + 1) % next.player_count);
             break;
         }
-        case ActionType::PlaceDesertTile:
+        case ActionType::PlaceDesertTile: {
+            // Extract and validate placement intent before mutating state
+            const auto payload = std::get<PlaceDesertTilePayload>(action.payload);
+            if (!is_legal_place_desert_tile_action(next, payload)) {
+                throw std::invalid_argument("illegal place desert tile action");
+            }
+
+            const PlayerId current_player = next.current_player;
+            const int previous_tile = next.desert_tiles[current_player].tile;
+            // Remove previous tile ownership when player moves their desert tile
+            if (previous_tile >= 0 && previous_tile < kBoardTiles &&
+                next.desert_tile_owner[previous_tile] == static_cast<int>(current_player)) {
+                next.desert_tile_owner[previous_tile] = -1;
+            }
+
+            // Write new tile placement and owner lookup entry
+            next.desert_tiles[current_player] = {payload.tile, payload.move_delta};
+            next.desert_tile_owner[payload.tile] = static_cast<int>(current_player);
+
+            // End turn after successful placement
+            next.current_player = static_cast<PlayerId>((next.current_player + 1) % next.player_count);
+            break;
+        }
         case ActionType::TakeLegTicket:
         case ActionType::BetWinner:
         case ActionType::BetLoser: {
