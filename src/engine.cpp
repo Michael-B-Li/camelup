@@ -94,28 +94,62 @@ int final_bet_payout_for_correct_index(int correct_index) {
     return kFinalBetPayouts[correct_index];
 }
 
-// Winner is the top camel on the furthest tile
-CamelId find_overall_winner(const GameState& state) {
+// Build race order from first to last
+std::vector<CamelId> build_race_order(const GameState& state) {
+    std::vector<CamelId> order;
+    order.reserve(kCamelCount);
+
     for (int tile = kBoardTiles - 1; tile >= 0; --tile) {
         const auto& stack = state.board[tile];
-        if (stack.empty()) {
-            continue;
+        for (int idx = static_cast<int>(stack.size()) - 1; idx >= 0; --idx) {
+            order.push_back(stack[static_cast<std::size_t>(idx)]);
         }
-        return stack.back();
     }
-    throw std::runtime_error("winner not found on board");
+    if (order.empty()) {
+        throw std::runtime_error("race order not found on board");
+    }
+    return order;
 }
 
-// Loser is the bottom camel on the nearest tile
-CamelId find_overall_loser(const GameState& state) {
-    for (int tile = 0; tile < kBoardTiles; ++tile) {
-        const auto& stack = state.board[tile];
-        if (stack.empty()) {
-            continue;
-        }
-        return stack.front();
+void resolve_leg_tickets(GameState& state, const std::vector<CamelId>& race_order) {
+    if (race_order.size() < 2) {
+        throw std::runtime_error("insufficient race order for leg scoring");
     }
-    throw std::runtime_error("loser not found on board");
+
+    const CamelId first = race_order[0];
+    const CamelId second = race_order[1];
+
+    for (int player = 0; player < state.player_count; ++player) {
+        for (const auto& ticket : state.player_leg_tickets[player]) {
+            if (ticket.camel == first) {
+                state.money[player] += ticket.value;
+            } else if (ticket.camel == second) {
+                state.money[player] += 1;
+            } else {
+                state.money[player] -= 1;
+            }
+        }
+        state.player_leg_tickets[player].clear();
+    }
+    for (int player = state.player_count; player < kMaxPlayers; ++player) {
+        state.player_leg_tickets[player].clear();
+    }
+}
+
+void reset_for_next_leg(GameState& state) {
+    state.leg_tickets_remaining.fill(kLegTicketCount);
+    state.desert_tile_owner.fill(-1);
+    for (int player = 0; player < kMaxPlayers; ++player) {
+        state.desert_tiles[player] = {-1, 1};
+    }
+    state.die_available.fill(true);
+    ++state.leg_number;
+}
+
+void resolve_leg_end(GameState& state) {
+    const auto race_order = build_race_order(state);
+    resolve_leg_tickets(state, race_order);
+    reset_for_next_leg(state);
 }
 
 // Resolve one final bet stack using target camel and play order payouts
@@ -139,8 +173,9 @@ void resolve_final_bet_stack(std::array<int, kMaxPlayers>& money,
 
 // Resolve both final bet stacks when race ends
 void resolve_end_of_game_payouts(GameState& state) {
-    const CamelId winner = find_overall_winner(state);
-    const CamelId loser = find_overall_loser(state);
+    const auto race_order = build_race_order(state);
+    const CamelId winner = race_order.front();
+    const CamelId loser = race_order.back();
     resolve_final_bet_stack(state.money, state.winner_bet_stack, winner);
     resolve_final_bet_stack(state.money, state.loser_bet_stack, loser);
 }
@@ -163,7 +198,6 @@ GameState Engine::new_game(int player_count) {
     state.money.fill(3);
     state.desert_tile_owner.fill(-1);
     state.leg_tickets_remaining.fill(kLegTicketCount);
-    reset_leg_dice(state);
 
     for (CamelId camel = 0; camel < static_cast<CamelId>(kCamelCount); ++camel) {
         state.leg_ticket_values[camel] = kLegTicketDefaults;
@@ -177,11 +211,15 @@ GameState Engine::new_game(int player_count) {
         }
     }
 
-    // Basic setup used in this scaffold: all camels start on tile 0
-    // TODO: Implement Camel Up v1 opening setup (initial die rolls) instead of a fixed stack
-    for (CamelId camel = 0; camel < static_cast<CamelId>(kCamelCount); ++camel) {
-        state.board[0].push_back(camel);
+    // Camel Up v1 opening setup
+    // Roll each camel die once and place that camel on tile 1..3
+    reset_leg_dice(state);
+    for (int roll = 0; roll < kCamelCount; ++roll) {
+        const auto [camel, distance] = roll_die(state);
+        state.board[distance].push_back(camel);
     }
+    // Leg 1 starts with all dice available after opening setup
+    reset_leg_dice(state);
 
     return state;
 }
@@ -199,10 +237,9 @@ GameState Engine::apply_action(const GameState& state, const Action& action) {
 
     switch (action.type()) {
         case ActionType::RollDie: {
-            // If the leg is exhausted, start a new leg before rolling again
+            // Defensive recovery for malformed states with no available dice
             if (!has_available_die(next)) {
-                reset_leg_dice(next);
-                ++next.leg_number;
+                resolve_leg_end(next);
             }
 
             // Roll one available camel die and move that camel stack
@@ -292,11 +329,16 @@ GameState Engine::apply_action(const GameState& state, const Action& action) {
         }
     }
 
-    // Current finish condition: any camel on final tile ends the game
+    // Race ends as soon as a camel reaches the final tile
     if (!next.board[kBoardTiles - 1].empty()) {
         next.terminal = true;
         // Final winner and loser bets are settled once on transition to terminal
         resolve_end_of_game_payouts(next);
+    }
+
+    // Leg ends when all dice are consumed and race is not terminal
+    if (!next.terminal && action.type() == ActionType::RollDie && !has_available_die(next)) {
+        resolve_leg_end(next);
     }
 
     return next;
