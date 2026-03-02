@@ -28,10 +28,23 @@ cmake -S . -B build -DCAMELUP_BUILD_UI=OFF
 ## Run
 
 ```bash
-./build/camelup
+./build/camelup --seed 42 --players 3 --turn-limit 100 --policy roll
 ./build/camelup_ui
 ctest --test-dir build
 ```
+
+CLI usage:
+
+```bash
+./build/camelup --seed 42 --players 3 --turn-limit 100 --policy roll
+./build/camelup --seed 42 --players 4 --turn-limit 200 --policy random --verbose
+```
+
+Policies:
+
+- `roll`: always choose the legal roll action when available
+- `first`: always choose the first legal action
+- `random`: choose a random legal action
 
 UI usage:
 
@@ -69,10 +82,15 @@ UI usage:
   - Removes desert tiles
   - Resets dice and increments leg number
 - Implements end-of-game winner/loser bet payout resolution
-- Optional terminal UI to watch state progression turn-by-turn
+- Provides a CLI runner for non-interactive full-game simulation
+  - Configurable seed, player count, turn limit, and action-selection policy
+  - Optional per-turn action logging with `--verbose`
+- Provides a terminal UI for interactive play and inspection
+  - Shows board state, race order, money, desert tiles, leg tickets, and final bet stacks
+  - Lets you select any legal action each turn
+  - Supports auto-roll mode for quick viewing
 
 ### Not implemented yet
 
 - Full rules audit against official Camel Up v1 wording and edge cases
 - Broader test suite
-- Production-style CLI runner replacing the current demo entrypoint
